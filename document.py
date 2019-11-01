@@ -18,10 +18,10 @@ MIME_TYPES_TO_CHECK = [
     'application/vnd.ms-office']
 
 MACRO_FLAGS = {
-        '^\| AutoExec': 'executes automatically',
-        '^\| Suspicious\s+\|\s+Shell': 'executes file(s)',
-        '^\| Suspicious\s+\|\s+User-Agent': 'download file(s)',
-        '^\| Suspicious': 'have suspicious strings',
+        '^\|\s*AutoExec': 'executes automatically',
+        '^\|\s*Suspicious\s*\|\s*Shell': 'executes file(s)',
+        '^\|\s*Suspicious\s*\|\s*User-Agent': 'download file(s)',
+        '^\|\s*Suspicious': 'have suspicious strings',
 }
 
 class Document:
@@ -61,7 +61,7 @@ class Document:
     @property
     def _macro_flags(self):
         if not Document.__macro_flags:
-            Document.__macro_flags = [{ 'regexp': re.compile(exp, re.MULTILINE), 'flag': flag } for exp, flag in MACRO_FLAGS.iteritems()]
+            Document.__macro_flags = [{ 'regexp': re.compile(exp, re.MULTILINE), 'test': exp, 'flag': flag } for exp, flag in MACRO_FLAGS.iteritems()]
 
         return Document.__macro_flags
 
@@ -99,11 +99,15 @@ class Document:
 
     def _check_contains_malicious_macro(self):
         document_type = self._get_type()
+        if document_type.startswith('application/xml'):
+            # Kann eine MS Office-Datei ohne ZIP-Container sein.
+            # Dreckiger Hack: mit GREP scannen.
+            if self._get_command_output(['grep', '-m1', '<?mso-application', self._file_path]) != '':
+                return self._check_macro_flags()
 
         for mime_type in MIME_TYPES_TO_CHECK:
             if mime_type in document_type:
-                self._check_macro_flags()
-                break
+                return self._check_macro_flags()
 
     def _check_macro_flags(self):
         params = [self.__config['paths']['olevba'], '-a', self._file_path]
