@@ -17,6 +17,12 @@ MIME_TYPES_TO_CHECK = [
     'application/vnd.ms-excel',
     'application/vnd.ms-office']
 
+MACRO_FLAGS = {
+        '^\|\s*AutoExec': 'executes automatically',
+        '^\|\s*Suspicious\s*\|\s*Shell': 'executes file(s)',
+        '^\|\s*Suspicious\s*\|\s*User-Agent': 'download file(s)',
+        '^\|\s*Suspicious': 'have suspicious strings',
+}
 
 class Document:
     __logger = None
@@ -28,6 +34,7 @@ class Document:
         self._file_name, self._extension = os.path.splitext(os.path.split(filename)[1])
         self._file_name += self._extension
         self.__hide_details = hide_details
+        self.initialize()
 
     def initialize(self):
         self._load_config()
@@ -54,20 +61,9 @@ class Document:
     @property
     def _macro_flags(self):
         if not Document.__macro_flags:
-            self._setup_flags()
+            Document.__macro_flags = [{ 'regexp': re.compile(exp, re.MULTILINE), 'test': exp, 'flag': flag } for exp, flag in MACRO_FLAGS.iteritems()]
 
         return Document.__macro_flags
-
-    def _setup_flags(self):
-        compiled = self._compile_regular_expressions()
-        flags = ['execute automatically', 'execute file(s)', 'download file(s)']
-        Document.__macro_flags = OrderedDict(zip(compiled, flags))
-
-    @staticmethod
-    def _compile_regular_expressions():
-        patterns = ('AutoExec', "Suspicious\s+\|\s+Shell", "Suspicious\s+\|\s+User-Agent")
-        compiled = [re.compile("^\|\s+" + exp, re.MULTILINE) for exp in patterns]
-        return compiled
 
     def check(self):
         try:
@@ -94,9 +90,8 @@ class Document:
             raise SkipChecks()
 
     def _get_type(self):
-        command = '{0} --brief --mime {1}'.format(self.__config['paths']['file'], self._file_path)
+        command = [self.__config['paths']['file'], '--brief', '--mime', self._file_path]
         output = self._get_command_output(command)
-
         return output.lower()
 
     def _log_clean(self):
@@ -104,27 +99,34 @@ class Document:
 
     def _check_contains_malicious_macro(self):
         document_type = self._get_type()
+        if document_type.startswith('application/xml'):
+            # Kann eine MS Office-Datei ohne ZIP-Container sein.
+            # Dreckiger Hack: mit GREP scannen.
+            if self._get_command_output(['grep', '-m1', '<?mso-application', self._file_path]) != '':
+                return self._check_macro_flags()
 
         for mime_type in MIME_TYPES_TO_CHECK:
             if mime_type in document_type:
-                self._check_macro_flags()
-                break
+                return self._check_macro_flags()
 
     def _check_macro_flags(self):
-        params = self.__config['paths']['olevba'] + ' -a {0}'.format(self._file_path)
+        params = [self.__config['paths']['olevba'], '-a', self._file_path]
         output = self._get_command_output(params)
         flags = self.__compute_macro_flags(output)
-
-        self._log_infected(flags)
+        if len(flags) > 0:
+            self._log_infected(flags)
 
     @staticmethod
     def _get_command_output(command):
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return process.stdout.read()
 
     def __compute_macro_flags(self, output):
-        return [self._macro_flags[regexp] for regexp in self._macro_flags.keys() if
-                regexp.findall(output)]
+        result = []
+        for test in self._macro_flags:
+            if test['regexp'].findall(output):
+                result.append(test['flag'])
+        return result
 
     def _log_infected(self, flags):
         message = self._get_log_message(flags)
